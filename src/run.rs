@@ -1,49 +1,47 @@
-use std::io::prelude::*;
-use std::io::BufReader;
-use std::net::TcpListener;
-use std::net::TcpStream;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 use tracing::info;
 
-use crate::worker::ThreadPool;
+use crate::error::Result;
 
-pub fn run() {
-    let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
-    let worker_pool = ThreadPool::new(4);
+pub async fn run() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:3000").await?;
 
-    info!("Server started on port 3000");
+    info!("Server running on http://127.0.0.1:3000");
+    
+    loop {
+        let (stream, _) = listener.accept().await?;
 
-    for stream in listener.incoming() {
-        let stream = stream.unwrap();
-
-        worker_pool.execute(|| {
-            handle_connect(stream);
+        tokio::spawn(async move {
+            let _ = handle_connect(stream).await;
         });
     }
 
-    info!("Shutting down.");
+    Ok(())
 }
 
-fn handle_connect(stream: TcpStream) {
-    let reader = BufReader::new(&stream);
-    let request: Vec<_> = reader
-        .lines()
-        .map(|x| x.unwrap())
-        .take_while(|x| !x.is_empty())
-        .collect();
+async fn handle_connect(mut stream: TcpStream) -> Result<()> {
+    let mut buffer = [0; 1024];
+    stream.read(&mut buffer).await?;
+
+    let request_str = String::from_utf8_lossy(&buffer);
+    let request = request_str.lines().collect::<Vec<&str>>();
 
     let Some(first_line) = request.first() else {
-        return handle_invalid_request(stream);
+        return handle_invalid_request(stream).await;
     };
 
     info!("{}", first_line);
 
     let route_parts: Vec<&str> = first_line.split_whitespace().collect();
     let Some(method) = route_parts.get(0) else {
-        return handle_invalid_request(stream);
+        return handle_invalid_request(stream).await;
     };
 
     let Some(uri) = route_parts.get(1) else {
-        return handle_invalid_request(stream);
+        return handle_invalid_request(stream).await;
     };
 
     let (status_line, filename) = match *uri {
@@ -55,27 +53,33 @@ fn handle_connect(stream: TcpStream) {
         _ => ("HTTP/1.1 404 NOT FOUND", "404 Not Found"),
     };
 
-    handle_response(stream, status_line, filename);
+    handle_response(stream, status_line, filename).await?;
+
+    Ok(())
 }
 
-fn handle_response(mut stream: TcpStream, status_line: &str, contents: &str) {
+async fn handle_response(mut stream: TcpStream, status_line: &str, contents: &str) -> Result<()> {
     let response = format!(
         "{}\r\nContent-Length: {}\r\n\r\n{}",
         status_line,
         contents.len(),
         contents
     );
-    stream.write(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
+    stream.write(response.as_bytes()).await?;
+    stream.flush().await?;
+
+    Ok(())
 }
 
-fn handle_invalid_request(mut stream: TcpStream) {
+async fn handle_invalid_request(mut stream: TcpStream) -> Result<()> {
     let contents = "400 Bad Request".to_string();
     let response = format!(
         "HTTP/1.1 400 BAD REQUEST\r\nContent-Length: {}\r\n\r\n{}",
         contents.len(),
         contents
     );
-    stream.write(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
+    stream.write(response.as_bytes()).await?;
+    stream.flush().await?;
+
+    Ok(())
 }

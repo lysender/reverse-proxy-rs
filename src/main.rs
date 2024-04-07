@@ -1,9 +1,12 @@
+mod error;
 mod run;
-mod worker;
+
+use std::process;
 
 use run::run;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Set the RUST_LOG, if it hasn't been explicitly defined
     if std::env::var_os("RUST_LOG").is_none() {
         std::env::set_var("RUST_LOG", "web_server=info")
@@ -14,5 +17,8 @@ fn main() {
         .compact()
         .init();
 
-    run();
+    if let Err(e) = run().await {
+        eprintln!("Application error: {e}");
+        process::exit(1);
+    }
 }
